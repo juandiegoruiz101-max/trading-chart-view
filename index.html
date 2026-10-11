@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TradingView-like Professional</title>
+  <style>
+    :root {
+      --bg: #0a1220;
+      --bg-2: #0d1729;
+      --panel: #101b2d;
+      --panel-2: #14233c;
+      --grid: rgba(131, 149, 175, 0.18);
+      --text: #e8f0ff;
+      --muted: #8fa0ba;
+      --buy: #27d17d;
+      --buy-soft: rgba(39, 209, 125, 0.18);
+      --sell: #ff5d7a;
+      --sell-soft: rgba(255, 93, 122, 0.18);
+      --cvd: #f2bd4b;
+      --rsi: #6ab0ff;
+      --vol: rgba(122, 146, 255, 0.5);
+      --axis: rgba(255,255,255,0.25);
+      --entry: #f8fafc;
+      --stop: #ff5d7a;
+      --target: #25d366;
+      --shadow: rgba(0,0,0,0.35);
+      --accent: #3b82f6;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: linear-gradient(180deg, var(--bg), var(--bg-2));
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .frame-btn, .mode-btn {
+      appearance: none;
+      background: rgba(20, 35, 60, 0.9);
+      color: var(--text);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      transition: 0.15s ease;
+    }
+
+    .frame-btn.active, .mode-btn.active {
+      background: linear-gradient(180deg, #1e7bf3, #1559c7);
+      border-color: rgba(107, 166, 255, 0.75);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+    }
+
+    .chip {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(18,28,44,0.7);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-rows: 1.7fr 0.85fr 0.85fr 0.62fr;
+      gap: 8px;
+      height: calc(100vh - 80px);
+      min-height: 680px;
+    }
+
+    .panel {
+      position: relative;
+      background: linear-gradient(180deg, rgba(15, 23, 36, 0.95), rgba(10, 17, 29, 0.96));
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 12px 30px rgba(0,0,0,0.16);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      cursor: crosshair;
+    }
+
+    .legend {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+      pointer-events: none;
+      z-index: 5;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.2);
+    }
+
+    .legend .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <button class="frame-btn active" data-frame="5m">5m</button>
+    <button class="frame-btn" data-frame="1h">1h</button>
+    <button class="frame-btn" data-frame="4h">4h</button>
+    <button class="mode-btn" id="replayToggle">Replay OFF</button>
+    <div class="chip" id="statusLabel">Visible: 80 / 276</div>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="legend">
+        <div><span class="dot" style="background: var(--buy)"></span>Compra agresiva</div>
+        <div><span class="dot" style="background: var(--sell)"></span>Venta agresiva</div>
+      </div>
+      <canvas id="priceCanvas"></canvas>
+    </div>
+    <div class="panel"><canvas id="rsiCanvas"></canvas></div>
+    <div class="panel"><canvas id="cvdCanvas"></canvas></div>
+    <div class="panel"><canvas id="volumeCanvas"></canvas></div>
+  </div>
+
+  <script>
+    // ================================================================
+    // Datos embebidos como JSON-like (estructura equivalente a la que
+    // indicaste: o,h,l,c / co,ch,cl,cc / fl / bu)
+    // ================================================================
+    const DATA = (() => {
+      const n = 276;
+      const o = [];
+      const h = [];
+      const l = [];
+      const c = [];
+      const co = [];
+      const ch = [];
+      const cl = [];
+      const cc = [];
+      const fl = [];
+      const bu = [];
+
+      let price = 10150;
+      let cvd = 0;
+      let tradeSeq = 1;
+
+      for (let i = 0; i < n; i++) {
+        const prevClose = price;
+        const trend = Math.sin(i / 7.5) * 18 + (Math.random() - 0.5) * 26;
+        const open = prevClose;
+        const close = open + trend;
+        const high = Math.max(open, close) + 12 + Math.random() * 18;
+        const low = Math.min(open, close) - 12 - Math.random() * 18;
+
+        o.push(Math.round(open));
+        h.push(Math.round(high));
+        l.push(Math.round(low));
+        c.push(Math.round(close));
+
+        const delta = Math.round((close - open) * 4 + (Math.random() - 0.5) * 220);
+        cvd += delta;
+        co.push(Math.round(cvd * 0.25));
+        ch.push(Math.round(cvd * 0.44));
+        cl.push(Math.round(cvd * 0.18));
+        cc.push(Math.round(cvd));
+
+        const heatLevels = 5 + Math.floor(Math.random() * 6);
+        for (let j = 0; j < heatLevels; j++) {
+          const priceLevel = Math.round((open + (Math.random() - 0.5) * 90) / 5) * 5;
+          const net = Math.round((Math.random() - 0.45) * 290 + (close - open) * 8);
+          fl.push([i, priceLevel, net]);
+        }
+
+        const tradeCount = i % 5 === 0 ? 2 : 1;
+        for (let j = 0; j < tradeCount; j++) {
+          const side = Math.random() > 0.5 ? 1 : -1;
+          const priceLevel = Math.round((open + (Math.random() - 0.5) * 45 + side * 15) / 5) * 5;
+          const size = Math.round(90 + Math.random() * 950);
+          bu.push([i, priceLevel, size, side]);
+          tradeSeq++;
+        }
+
+        price = close;
+      }
+
+      return { o, h, l, c, co, ch, cl, cc, fl, bu };
+    })();
+
+    const state = {
+      frame: '5m',
+      startIndex: 0,
+      visibleCount: 80,
+      hoverIndex: null,
+      drag: false,
+      dragStartX: 0,
+      dragStartIndex: 0,
+      replayOn: false,
+      replayTicker: null,
+      tradeEntry: null,
+      tradeStop: null,
+      tradeTarget: null,
+      tradeMode: 0
+    };
+
+    const canvases = {
+      price: document.getElementById('priceCanvas'),
+      rsi: document.getElementById('rsiCanvas'),
+      cvd: document.getElementById('cvdCanvas'),
+      volume: document.getElementById('volumeCanvas')
+    };
+
+    const frameMap = {
+      '5m': buildFrameSeries(DATA, 1),
+      '1h': buildFrameSeries(DATA, 12),
+      '4h': buildFrameSeries(DATA, 48)
+    };
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function buildFrameSeries(full, step) {
+      const out = [];
+      for (let i = 0; i < full.o.length; i += step) {
+        const slice = [];
+        for (let j = 0; j < step && i + j < full.o.length; j++) {
+          slice.push({
+            o: full.o[i + j],
+            h: full.h[i + j],
+            l: full.l[i + j],
+            c: full.c[i + j],
+            cvd: full.cc[i + j],
+            v: Math.max(90, Math.abs(full.c[i + j] - full.o[i + j]) * 18 + 100 + Math.random() * 90)
+          });
+        }
+        if (!slice.length) continue;
+        const open = slice[0].o;
+        const high = Math.max(...slice.map(x => x.h));
+        const low = Math.min(...slice.map(x => x.l));
+        const close = slice[slice.length - 1].c;
+        const volume = slice.reduce((sum, x) => sum + x.v, 0);
+        const cvd = slice[slice.length - 1].cvd;
+        out.push({
+          time: i,
+          o: open,
+          h: high,
+          l: low,
+          c: close,
+          v: volume,
+          cvd
+        });
+      }
+      return out;
+    }
+
+    function calcRSI(series, period = 14) {
+      const out = [];
+      let gains = 0;
+      let losses = 0;
+
+      for (let i = 0; i < series.length; i++) {
+        if (i < period) {
+          out.push(null);
+          continue;
+        }
+
+        if (i === period) {
+          for (let j = 1; j <= period; j++) {
+            const d = series[j].c - series[j - 1].c;
+            if (d >= 0) gains += d;
+            else losses += Math.abs(d);
+          }
+          const avgGain = gains / period;
+          const avgLoss = losses / period;
+          const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+          out.push(100 - (100 / (1 + rs)));
+          continue;
+        }
+
+        const diff = series[i].c - series[i - 1].c;
+        const gain = diff > 0 ? diff : 0;
+        const loss = diff < 0 ? Math.abs(diff) : 0;
+
+        // promedio móvil simple para mantener estabilidad y operar en tiempo real
+        const prev = out[i - 1];
+        const avgGain = (gain + ((period - 1) * (prev === null ? 0 : prev))) / period;
+        const avgLoss = (loss + ((period - 1) * (prev === null ? 0 : prev))) / period;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        out.push(100 - (100 / (1 + rs)));
+      }
+      return out;
+    }
+
+    function getVisibleSeries() {
+      const series = frameMap[state.frame];
+      return series.slice(state.startIndex, state.startIndex + state.visibleCount);
+    }
+
+    function getPriceBounds(series, pad = 12) {
+      const lows = series.map(x => x.l);
+      const highs = series.map(x => x.h);
+      const min = Math.min(...lows) - pad;
+      const max = Math.max(...highs) + pad;
+      return { min, max };
+    }
+
+    function mapPrice(price, min, max, top, height) {
+      const denom = max - min || 1;
+      return top + ((max - price) / denom) * height;
+    }
+
+    function drawGrid(ctx, width, height, leftPad, topPad, plotHeight, plotWidth) {
+      ctx.clearRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+      ctx.lineWidth = 1;
+
+      for (let i = 0; i <= 5; i++) {
+        const y = topPad + (plotHeight / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(leftPad, y);
+        ctx.lineTo(leftPad + plotWidth, y);
+        ctx.stroke();
+      }
+
+      for (let i = 0; i <= 5; i++) {
+        const x = leftPad + (plotWidth / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(x, topPad);
+        ctx.lineTo(x, topPad + plotHeight);
+        ctx.stroke();
+      }
+    }
+
+    function drawPricePanel() {
+      const canvas = canvases.price;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const width = rect.width;
+      const height = rect.height;
+      const leftPad = 44;
+      const rightPad = 14;
+      const topPad = 16;
+      const bottomPad = 20;
+      const plotWidth = width - leftPad - rightPad;
+      const plotHeight = height - topPad - bottomPad;
+
+      const series = getVisibleSeries();
+      const bounds = getPriceBounds(series, 12);
+      const min = bounds.min;
+      const max = bounds.max;
+
+      drawGrid(ctx, width, height, leftPad, topPad, plotHeight, plotWidth);
+
+      // heatmap agresivo por nivel
+      const heat = DATA.fl.filter(([idx]) => idx >= state.startIndex && idx < state.startIndex + state.visibleCount);
+      for (const [idx, level, net] of heat) {
+        const rel = idx - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        const y = mapPrice(level, min, max, topPad, plotHeight);
+        const w = Math.max(4, plotWidth / state.visibleCount * 0.82);
+        const h = 14;
+        ctx.fillStyle = net >= 0 ? 'rgba(39, 209, 125, 0.52)' : 'rgba(255, 93, 122, 0.52)';
+        ctx.fillRect(x - w / 2, y - h / 2, w, h);
+      }
+
+      // velas
+      const candleW = Math.max(2, (plotWidth / Math.max(series.length, 1)) * 0.7);
+      for (let i = 0; i < series.length; i++) {
+        const bar = series[i];
+        const x = leftPad + (i / Math.max(1, series.length - 1)) * plotWidth;
+        const oY = mapPrice(bar.o, min, max, topPad, plotHeight);
+        const cY = mapPrice(bar.c, min, max, topPad, plotHeight);
+        const hY = mapPrice(bar.h, min, max, topPad, plotHeight);
+        const lY = mapPrice(bar.l, min, max, topPad, plotHeight);
+
+        ctx.strokeStyle = bar.c >= bar.o ? '#2ecc71' : '#ff5d7a';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x, hY);
+        ctx.lineTo(x, lY);
+        ctx.stroke();
+
+        const bodyTop = Math.min(oY, cY);
+        const bodyHeight = Math.max(2, Math.abs(cY - oY));
+        ctx.fillStyle = bar.c >= bar.o ? '#2ecc71' : '#ff5d7a';
+        ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyHeight);
+      }
+
+      // operaciones grandes
+      const bigTrades = DATA.bu.filter(([idx]) => idx >= state.startIndex && idx < state.startIndex + state.visibleCount);
+      for (const [idx, level, size, side] of bigTrades) {
+        const rel = idx - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        const y = mapPrice(level, min, max, topPad, plotHeight);
+        const r = Math.min(8, 3 + size / 180);
+        ctx.beginPath();
+        ctx.fillStyle = side > 0 ? 'rgba(39,209,125,0.95)' : 'rgba(255,93,122,0.95)';
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ejes con valores
+      const tickCount = 5;
+      for (let i = 0; i <= tickCount; i++) {
+        const val = max - ((max - min) / tickCount) * i;
+        const y = topPad + (plotHeight / tickCount) * i;
+        ctx.fillStyle = '#8ea2be';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(Math.round(val), 4, y + 4);
+      }
+
+      // trade marks
+      if (state.tradeEntry !== null) {
+        const entryY = mapPrice(state.tradeEntry, min, max, topPad, plotHeight);
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.beginPath();
+        ctx.moveTo(leftPad, entryY);
+        ctx.lineTo(width - rightPad, entryY);
+        ctx.stroke();
+      }
+      if (state.tradeStop !== null) {
+        const stopY = mapPrice(state.tradeStop, min, max, topPad, plotHeight);
+        ctx.strokeStyle = '#ff5d7a';
+        ctx.beginPath();
+        ctx.moveTo(leftPad, stopY);
+        ctx.lineTo(width - rightPad, stopY);
+        ctx.stroke();
+      }
+      if (state.tradeTarget !== null) {
+        const targetY = mapPrice(state.tradeTarget, min, max, topPad, plotHeight);
+        ctx.strokeStyle = '#25d366';
+        ctx.beginPath();
+        ctx.moveTo(leftPad, targetY);
+        ctx.lineTo(width - rightPad, targetY);
+        ctx.stroke();
+      }
+
+      // crosshair
+      if (state.hoverIndex !== null) {
+        const idxClamped = clamp(state.hoverIndex, state.startIndex, Math.min(state.startIndex + state.visibleCount, frameMap[state.frame].length) - 1);
+        const rel = idxClamped - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, topPad);
+        ctx.lineTo(x, topPad + plotHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    function drawRSIPanel() {
+      const canvas = canvases.rsi;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const width = rect.width;
+      const height = rect.height;
+      const leftPad = 44;
+      const rightPad = 14;
+      const topPad = 16;
+      const bottomPad = 20;
+      const plotWidth = width - leftPad - rightPad;
+      const plotHeight = height - topPad - bottomPad;
+
+      const series = frameMap[state.frame];
+      const visible = series.slice(state.startIndex, state.startIndex + state.visibleCount);
+      const rsiValues = calcRSI(visible, 14);
+
+      drawGrid(ctx, width, height, leftPad, topPad, plotHeight, plotWidth);
+
+      const yFor = (val) => topPad + (100 - val) / 100 * plotHeight;
+      ctx.strokeStyle = 'rgba(148,163,184,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(leftPad, yFor(70));
+      ctx.lineTo(width - rightPad, yFor(70));
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(leftPad, yFor(30));
+      ctx.lineTo(width - rightPad, yFor(30));
+      ctx.stroke();
+
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < rsiValues.length; i++) {
+        const v = rsiValues[i];
+        if (v === null || !Number.isFinite(v)) continue;
+        const x = leftPad + (i / Math.max(1, visible.length - 1)) * plotWidth;
+        const y = yFor(v);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else { ctx.lineTo(x, y); }
+      }
+      ctx.strokeStyle = '#6ab0ff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      const labels = [0, 30, 50, 70, 100];
+      for (const val of labels) {
+        const y = yFor(val);
+        ctx.fillStyle = '#8ea2be';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(String(val), 4, y + 4);
+      }
+
+      if (state.hoverIndex !== null) {
+        const idx = clamp(state.hoverIndex, state.startIndex, Math.min(state.startIndex + state.visibleCount, series.length) - 1);
+        const rel = idx - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, topPad);
+        ctx.lineTo(x, topPad + plotHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    function drawCVDPanel() {
+      const canvas = canvases.cvd;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const width = rect.width;
+      const height = rect.height;
+      const leftPad = 44;
+      const rightPad = 14;
+      const topPad = 16;
+      const bottomPad = 20;
+      const plotWidth = width - leftPad - rightPad;
+      const plotHeight = height - topPad - bottomPad;
+
+      const series = frameMap[state.frame];
+      const visible = series.slice(state.startIndex, state.startIndex + state.visibleCount);
+      const values = visible.map(x => x.cvd);
+      const min = Math.min(...values, 0);
+      const max = Math.max(...values, 0);
+
+      drawGrid(ctx, width, height, leftPad, topPad, plotHeight, plotWidth);
+
+      const yFor = (val) => topPad + (max - val) / (max - min || 1) * plotHeight;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = leftPad + (i / Math.max(1, values.length - 1)) * plotWidth;
+        const y = yFor(v);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = '#f2bd4b';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      const zero = yFor(0);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(leftPad, zero);
+      ctx.lineTo(width - rightPad, zero);
+      ctx.stroke();
+
+      ctx.fillStyle = '#8ea2be';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(String(Math.round(max)), 4, topPad + 4);
+      ctx.fillText(String(Math.round(min)), 4, topPad + plotHeight - 4);
+
+      if (state.hoverIndex !== null) {
+        const idx = clamp(state.hoverIndex, state.startIndex, Math.min(state.startIndex + state.visibleCount, series.length) - 1);
+        const rel = idx - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, topPad);
+        ctx.lineTo(x, topPad + plotHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    function drawVolumePanel() {
+      const canvas = canvases.volume;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const width = rect.width;
+      const height = rect.height;
+      const leftPad = 44;
+      const rightPad = 14;
+      const topPad = 16;
+      const bottomPad = 20;
+      const plotWidth = width - leftPad - rightPad;
+      const plotHeight = height - topPad - bottomPad;
+
+      const series = frameMap[state.frame];
+      const visible = series.slice(state.startIndex, state.startIndex + state.visibleCount);
+      const maxVolume = Math.max(...visible.map(x => x.v), 1);
+
+      drawGrid(ctx, width, height, leftPad, topPad, plotHeight, plotWidth);
+
+      const barW = Math.max(2, (plotWidth / Math.max(visible.length, 1)) * 0.7);
+      for (let i = 0; i < visible.length; i++) {
+        const bar = visible[i];
+        const x = leftPad + (i / Math.max(1, visible.length - 1)) * plotWidth;
+        const h = (bar.v / maxVolume) * plotHeight;
+        const y = topPad + plotHeight - h;
+        ctx.fillStyle = bar.c >= bar.o ? 'rgba(39, 209, 125, 0.55)' : 'rgba(255, 93, 122, 0.55)';
+        ctx.fillRect(x - barW / 2, y, barW, h);
+      }
+
+      if (state.hoverIndex !== null) {
+        const idx = clamp(state.hoverIndex, state.startIndex, Math.min(state.startIndex + state.visibleCount, series.length) - 1);
+        const rel = idx - state.startIndex;
+        const x = leftPad + (rel / Math.max(1, state.visibleCount - 1)) * plotWidth;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, topPad);
+        ctx.lineTo(x, topPad + plotHeight);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    function paintAll() {
+      drawPricePanel();
+      drawRSIPanel();
+      drawCVDPanel();
+      drawVolumePanel();
+      document.getElementById('statusLabel').textContent = `Visible: ${Math.min(state.visibleCount, frameMap[state.frame].length)} / ${frameMap[state.frame].length}`;
+    }
+
+    function setFrame(frame) {
+      state.frame = frame;
+      const length = frameMap[frame].length;
+      state.visibleCount = clamp(state.visibleCount, 20, length);
+      state.startIndex = clamp(state.startIndex, 0, Math.max(0, length - state.visibleCount));
+      paintAll();
+    }
+
+    function updateHoverFromClientX(canvas, clientX) {
+      const rect = canvas.getBoundingClientRect();
+      const leftPad = 44;
+      const rightPad = 14;
+      const plotWidth = rect.width - leftPad - rightPad;
+      const relX = clientX - rect.left - leftPad;
+      const ratio = clamp(relX / Math.max(plotWidth, 1), 0, 1);
+      const seriesLen = frameMap[state.frame].length;
+      const idx = Math.round(state.startIndex + ratio * Math.min(state.visibleCount, seriesLen));
+      state.hoverIndex = clamp(idx, 0, seriesLen - 1);
+      paintAll();
+    }
+
+    function attachPointer(canvas) {
+      canvas.addEventListener('pointerdown', (e) => {
+        state.drag = true;
+        state.dragStartX = e.clientX;
+        state.dragStartIndex = state.startIndex;
+        canvas.setPointerCapture(e.pointerId);
+      });
+
+      canvas.addEventListener('pointermove', (e) => {
+        if (state.drag) {
+          const delta = e.clientX - state.dragStartX;
+          const step = Math.max(1, Math.round(Math.abs(delta) / 8));
+          const direction = delta < 0 ? 1 : -1;
+          const seriesLen = frameMap[state.frame].length;
+          state.startIndex = clamp(state.dragStartIndex - step * direction, 0, Math.max(0, seriesLen - state.visibleCount));
+          paintAll();
+        } else {
+          updateHoverFromClientX(canvas, e.clientX);
+        }
+      });
+
+      canvas.addEventListener('pointerleave', () => {
+        if (!state.drag) {
+          state.hoverIndex = null;
+          paintAll();
+        }
+      });
+
+      canvas.addEventListener('pointerup', () => {
+        state.drag = false;
+      });
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const factor = e.deltaY > 0 ? 1.14 : 0.86;
+        const seriesLen = frameMap[state.frame].length;
+        const nextVisible = clamp(Math.round(state.visibleCount * factor), 20, seriesLen);
+        const center = state.startIndex + state.visibleCount / 2;
+        state.visibleCount = nextVisible;
+        state.startIndex = clamp(Math.round(center - nextVisible / 2), 0, Math.max(0, seriesLen - nextVisible));
+        paintAll();
+      }, { passive: false });
+
+      canvas.addEventListener('click', (e) => {
+        if (canvas !== canvases.price) return;
+        const seriesLen = frameMap[state.frame].length;
+        const rect = canvas.getBoundingClientRect();
+        const leftPad = 44;
+        const rightPad = 14;
+        const plotWidth = rect.width - leftPad - rightPad;
+        const relX = e.clientX - rect.left - leftPad;
+        const ratio = clamp(relX / Math.max(plotWidth, 1), 0, 1);
+        const idx = Math.round(state.startIndex + ratio * Math.min(state.visibleCount, seriesLen));
+        const candle = frameMap[state.frame][clamp(idx, 0, seriesLen - 1)];
+
+        if (state.tradeMode === 0) {
+          state.tradeEntry = candle.c;
+          state.tradeStop = null;
+          state.tradeTarget = null;
+          state.tradeMode = 1;
+        } else if (state.tradeMode === 1) {
+          state.tradeStop = candle.c;
+          const risk = Math.abs(state.tradeEntry - state.tradeStop);
+          state.tradeTarget = state.tradeEntry + (state.tradeEntry > state.tradeStop ? risk * 2 : -risk * 2);
+          state.tradeMode = 2;
+        } else {
+          state.tradeEntry = null;
+          state.tradeStop = null;
+          state.tradeTarget = null;
+          state.tradeMode = 0;
+        }
+        paintAll();
+      });
+    }
+
+    function startReplay() {
+      if (state.replayTicker) clearInterval(state.replayTicker);
+      state.replayTicker = setInterval(() => {
+        if (!state.replayOn) return;
+        const seriesLen = frameMap[state.frame].length;
+        state.hoverIndex = Math.min((state.hoverIndex === null ? 0 : state.hoverIndex + 1), seriesLen - 1);
+        state.startIndex = clamp(state.hoverIndex - state.visibleCount + 1, 0, Math.max(0, seriesLen - state.visibleCount));
+        paintAll();
+      }, 140);
+    }
+
+    document.querySelectorAll('.frame-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.frame-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        setFrame(btn.dataset.frame);
+      });
+    });
+
+    document.getElementById('replayToggle').addEventListener('click', () => {
+      state.replayOn = !state.replayOn;
+      const btn = document.getElementById('replayToggle');
+      btn.classList.toggle('active', state.replayOn);
+      btn.textContent = state.replayOn ? 'Replay ON' : 'Replay OFF';
+
+      if (state.replayOn) {
+        state.hoverIndex = 0;
+        state.startIndex = 0;
+        paintAll();
+      } else {
+        clearInterval(state.replayTicker);
+      }
+    });
+
+    attachPointer(canvases.price);
+    attachPointer(canvases.rsi);
+    attachPointer(canvases.cvd);
+    attachPointer(canvases.volume);
+
+    setFrame('5m');
+    window.addEventListener('resize', paintAll);
+  </script>
+</body>
+</html>
